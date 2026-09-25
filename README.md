@@ -2,7 +2,7 @@
 
 Joint executor and verification allocation for LLM task graphs.
 
-A planner decomposes each query into an executable DAG. JOVE then solves a per-query mixed-integer program that assigns an executor API to every node and decides whether to call a fixed verifier. Executor quality is tracked with LinUCB; verifier value is D-optimal information gain \(I(u)=\tfrac12\log(1+u^2)\). A virtual queue \(q\) applies soft cost pressure against a long-term budget \(\gamma\), and sink latency is constrained by a deadline \(\mu\).
+A planner decomposes each query into an executable DAG. JOVE then solves a per-query mixed-integer program that assigns an executor API to every node and decides whether to call a fixed verifier. Executor quality is tracked with LinUCB; verifier value is D-optimal information gain `I(u) = 0.5 * log(1 + u^2)`. A virtual queue `q` applies soft cost pressure against a long-term budget `gamma`, and sink latency is constrained by a deadline `mu`.
 
 Verifier feedback is used only to update the executor quality model. Task outputs are never repaired or replanned from verifier labels.
 
@@ -25,7 +25,7 @@ python jove.py --smoke-test
 
 ## Run
 
-OpenRouter example (paper operating point: \(\gamma=200\), \(\mu=15\)):
+OpenRouter example (paper operating point: `gamma=200`, `mu=15`):
 
 ```bash
 python jove.py \
