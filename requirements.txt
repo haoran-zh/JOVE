@@ -1,0 +1,6 @@
+numpy
+requests
+pulp>=2.8
+datasets
+huggingface_hub
+sentence-transformers

@@ -1,0 +1,17 @@
+# Named API keys (do not commit real secrets).
+# Copy to API_keys.txt and fill in values.
+#
+# NVIDIA NIM:
+# API_key1=nvapi-...
+#
+# OpenRouter (https://openrouter.ai/models):
+# OPENROUTER_API_KEY=sk-or-v1-...
+#
+# Example:
+#   python jove.py \
+#     --base-url https://openrouter.ai/api/v1/chat/completions \
+#     --api-key-name OPENROUTER_API_KEY \
+#     --max-parallel-tasks 8 --request-interval 0 \
+#     --dataset bamboogle --sample-size 2
+OPENROUTER_API_KEY=
+API_key1=
