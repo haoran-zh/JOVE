@@ -252,7 +252,7 @@ def resolve_reasoning_profile(args: argparse.Namespace, example: PromptExample) 
         getattr(args, "mmlu_calibrated_verifier", "auto"),
         profile_name in {REASONING_PROFILE_MMLU, REASONING_PROFILE_LIVEBENCH},
     )
-    final_tokens = max(1, int(getattr(args, "final_aggregation_max_tokens", 512)))
+    final_tokens = max(1, int(getattr(args, "final_aggregation_max_tokens", 1024)))
     if profile_name == REASONING_PROFILE_HARD:
         return ReasoningProfileConfig(
             name=profile_name,
@@ -268,7 +268,7 @@ def resolve_reasoning_profile(args: argparse.Namespace, example: PromptExample) 
         return ReasoningProfileConfig(
             name=profile_name,
             planner_max_tasks=max(1, int(getattr(args, "mmlu_reasoning_max_tasks", 5))),
-            executor_max_tokens=max(1, int(getattr(args, "mmlu_executor_max_tokens", 768))),
+            executor_max_tokens=max(1, int(getattr(args, "mmlu_executor_max_tokens", 1024))),
             use_final_aggregation=use_final_aggregation,
             final_aggregation_max_tokens=final_tokens,
             use_full_context=use_full_context,
@@ -278,7 +278,7 @@ def resolve_reasoning_profile(args: argparse.Namespace, example: PromptExample) 
     if profile_name == REASONING_PROFILE_LIVEBENCH:
         return ReasoningProfileConfig(
             name=profile_name,
-            planner_max_tasks=max(1, int(getattr(args, "livebench_reasoning_max_tasks", 3))),
+            planner_max_tasks=max(1, int(getattr(args, "livebench_reasoning_max_tasks", 5))),
             executor_max_tokens=max(1, int(getattr(args, "livebench_executor_max_tokens", 1024))),
             use_final_aggregation=use_final_aggregation,
             final_aggregation_max_tokens=final_tokens,
@@ -554,7 +554,7 @@ class FeatureTables:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Bi-role verifier-aware online API allocation example.")
-    parser.add_argument("--base-url", default=os.environ.get("API_RECRUITER_BASE_URL", NVIDIA_NIM_BASE_URL), help=f"Chat completions URL. NIM default, or OpenRouter: {OPENROUTER_BASE_URL}")
+    parser.add_argument("--base-url", default=os.environ.get("API_RECRUITER_BASE_URL", OPENROUTER_BASE_URL), help=f"Chat completions URL. Paper default is OpenRouter: {OPENROUTER_BASE_URL}")
     parser.add_argument("--api-keys-file", default=os.environ.get("API_RECRUITER_API_KEYS_FILE", DEFAULT_API_KEYS_FILE), help="Path to a KEY=VALUE file (NVIDIA: API_key1=...; OpenRouter: OPENROUTER_API_KEY=...).")
     parser.add_argument("--api-key-name", default=os.environ.get("API_RECRUITER_API_KEY_NAME", os.environ.get("NVIDIA_NIM_API_KEY_NAME", DEFAULT_NVIDIA_NIM_API_KEY_NAME)), help="Named key from --api-keys-file. NIM: API_key1/API_key2. OpenRouter defaults to OPENROUTER_API_KEY when --base-url is OpenRouter.")
     parser.add_argument("--planner-model", default=os.environ.get("PLANNER_MODEL", "meta/llama-3.3-70b-instruct"))
@@ -595,22 +595,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=float(os.environ.get("API_RECRUITER_LATENCY_TOLERANCE_DELTA", "0.1")),
         help="Global per-prompt latency violation tolerance delta; split uniformly across task nodes.",
     )
-    parser.add_argument("--gamma", type=float, default=200.0, help="Long-term per-query budget (USD * --cost-usd-scale; default 200 = $0.0002).")
-    parser.add_argument("--V", type=float, default=None, help=argparse.SUPPRESS)  # Deprecated; ignored.
-    parser.add_argument("--k-c", type=float, default=float(os.environ.get("API_RECRUITER_K_C", "1e-6")), help="Budget-price step size alpha_lambda in scaled-cost units.")
-    parser.add_argument("--k-v", type=float, default=float(os.environ.get("API_RECRUITER_K_V", "5.0")), help="Verifier D-optimal information-gain coefficient k_v (I(u)=0.5*log(1+u^2))")
+    parser.add_argument("--gamma", type=float, default=0.0, help="Long-term per-query budget (USD * --cost-usd-scale; default 200 = $0.0002).")
+    # parser.add_argument("--V", type=float, default=None, help=argparse.SUPPRESS)  # Deprecated; ignored.
+    parser.add_argument("--k-c", type=float, default=float(os.environ.get("API_RECRUITER_K_C", "0.0")), help="Budget-price step size alpha_lambda (per USD)")
+    parser.add_argument("--k-v", type=float, default=float(os.environ.get("API_RECRUITER_K_V", "0.0")), help="Verifier D-optimal information-gain")
     parser.add_argument(
         "--cost-usd-scale",
         type=float,
         default=float(os.environ.get("API_RECRUITER_COST_USD_SCALE", str(DEFAULT_COST_USD_SCALE))),
-        help="Multiply OpenRouter usage.cost (USD) by this factor for budget/queue units. Default 1e6 so gamma=300 ≡ $0.0003/prompt.",
+        help="Multiply OpenRouter usage.cost (USD) by this factor for the cost ledger. Default 1e6 so gamma=200 ≡ $0.0002/prompt. The budget price λ is still updated in USD.",
     )
     parser.add_argument("--beta", type=float, default=0.25, help="LinUCB optimism multiplier.")
     parser.add_argument("--lambda-reg", type=float, default=1.0)
     parser.add_argument("--prior-mean", type=float, default=0.0, help="Quality-model offset; use 0 for the paper's ridge model.")
-    parser.add_argument("--verifier-threshold", type=float, default=0.5, help=argparse.SUPPRESS)
-    parser.add_argument("--verifier-prior-scale", type=float, default=0.0, help=argparse.SUPPRESS)
-    parser.add_argument("--verifier-prior-half-life", type=float, default=0.0, help=argparse.SUPPRESS)
+    # parser.add_argument("--verifier-threshold", type=float, default=0.5, help=argparse.SUPPRESS)
+    # parser.add_argument("--verifier-prior-scale", type=float, default=0.0, help=argparse.SUPPRESS)
+    # parser.add_argument("--verifier-prior-half-life", type=float, default=0.0, help=argparse.SUPPRESS)
     parser.add_argument("--embedding-model", default="sentence-transformers/all-MiniLM-L6-v2")
     parser.add_argument("--max-parallel-tasks", type=int, default=int(os.environ.get("API_RECRUITER_MAX_PARALLEL_TASKS", "8")), help="Max ready DAG tasks (and verifiers) to run concurrently. Forced to 1 when --slow is set.")
     parser.add_argument("--request-interval", type=float, default=float(os.environ.get("API_RECRUITER_REQUEST_INTERVAL", "0")), help="Global minimum seconds between planner/executor/verifier HTTP request starts.")
@@ -1433,6 +1433,34 @@ def planned_selection_call_count(plan: Plan, selection: object) -> int:
     return len(plan.tasks) + sum(1 for verifier in verifier_by_task.values() if verifier is not None)
 
 
+def advance_budget_price(
+    lam_usd: float,
+    realized_scaled_cost: float,
+    gamma_scaled: float,
+    alpha_lambda: float,
+    cost_usd_scale: float,
+) -> float:
+    """Update λ on USD so the MILP penalty matches paper eq. (3).
+
+    Ledger costs are USD × ``cost_usd_scale``. λ multiplies USD, and the solver
+    receives λ / scale so that (λ / scale) × scaled_cost = λ × usd_cost.
+    """
+    scale = float(cost_usd_scale)
+    if scale <= 0.0:
+        raise ValueError("cost_usd_scale must be positive")
+    return update_virtual_queue(
+        lam_usd,
+        float(realized_scaled_cost) / scale,
+        float(gamma_scaled) / scale,
+        alpha_lambda=alpha_lambda,
+    )
+
+
+def milp_budget_price(lam_usd: float, cost_usd_scale: float) -> float:
+    """Price that multiplies scaled node costs and equals λ × USD cost."""
+    return float(lam_usd) / float(cost_usd_scale)
+
+
 def init_quality_model(feature_map: MiniLMFeatureMap, api_candidates: List[str], lambda_reg: float, prior_mean: float) -> WeightedLinearQualityModel:
     probe = feature_map.encode({"probe": "initialize quality model dimension"}, ROLE_EXEC, api_candidates[0])
     return WeightedLinearQualityModel(dimension=len(probe), lambda_reg=lambda_reg, prior_mean=prior_mean)
@@ -1788,7 +1816,7 @@ def run_prompt_loop(args: argparse.Namespace, artifacts: Optional[TrialArtifacts
         except ValueError as exc:
             prompt_elapsed = time.perf_counter() - prompt_start
             planner_skip_count += 1
-            q_t = update_virtual_queue(q_t, planner_realized_cost, args.gamma)
+            q_t = advance_budget_price(q_t, planner_realized_cost, args.gamma, args.k_c, cost_usd_scale)
             print(
                 f"[planner_skip] prompt_index={prompt_index} category=planner_parse_failure model={args.planner_model} "
                 f"status_code={planner_chat_result.status_code} retry_count={planner_chat_result.retry_count} "
@@ -1913,8 +1941,8 @@ def run_prompt_loop(args: argparse.Namespace, artifacts: Optional[TrialArtifacts
                     api_candidates=api_candidates,
                     coeffs=coeffs,
                     mu_t=remaining_deadline,
-                    q_t=q_t,
-                    k_c=args.k_c,
+                    q_t=milp_budget_price(q_t, cost_usd_scale),
+                    k_c=1.0,
                     k_v=args.k_v,
                     fixed_verifier_model=verifier_model,
                     allow_self_verification=False,
@@ -1938,7 +1966,7 @@ def run_prompt_loop(args: argparse.Namespace, artifacts: Optional[TrialArtifacts
                 budget_infeasible_count += 1
             optimization_stage_wall_time = time.perf_counter() - optimization_stage_start
             prompt_elapsed = time.perf_counter() - prompt_start
-            q_t = update_virtual_queue(q_t, planner_realized_cost, args.gamma)
+            q_t = advance_budget_price(q_t, planner_realized_cost, args.gamma, args.k_c, cost_usd_scale)
             skip_reason = "latency_infeasible" if is_latency_infeasible else "budget_infeasible"
             skip_stage = "latency" if is_latency_infeasible else "budget"
             print(
@@ -2020,7 +2048,7 @@ def run_prompt_loop(args: argparse.Namespace, artifacts: Optional[TrialArtifacts
             selected_cost = float(coeffs.exec_cost[(task_id, selected_executor)])
             if selected_verifier is not None:
                 selected_cost += float(coeffs.verifier_cost[task_id])
-            queue_weighted_cost = args.k_c * q_t * selected_cost
+            queue_weighted_cost = milp_budget_price(q_t, cost_usd_scale) * selected_cost
             print(
                 f"  {task_id}: exec={selected_executor} fixed_verifier={verifier_model} "
                 f"verifier_call={verifier_call} selected_verifier={selected_verifier or 'none'} "
@@ -2256,7 +2284,7 @@ def run_prompt_loop(args: argparse.Namespace, artifacts: Optional[TrialArtifacts
         verifier_cost_factor = 1.0
         planned_call_count = planned_selection_call_count(plan, selection)
         budget_feasible = realized_cost <= args.gamma + 1e-8
-        q_t = update_virtual_queue(q_t, queue_realized_cost, args.gamma)
+        q_t = advance_budget_price(q_t, queue_realized_cost, args.gamma, args.k_c, cost_usd_scale)
         realized_finish = realized_finish_times(plan, execution_latency)
         safe_sink_latency = max(selection.finish_time[sink] for sink in plan.sinks())
         latency_feasible = planned_overhead_seconds + safe_sink_latency <= args.mu + 1e-8
@@ -2403,8 +2431,7 @@ def run_prompt_loop(args: argparse.Namespace, artifacts: Optional[TrialArtifacts
                     "uncertainty_reduction": uncertainty_reduction(
                         coeffs.exec_uncertainty[(task_id, selection.executor_by_task[task_id])]
                     ),
-                    "queue_weighted_expected_cost": args.k_c
-                    * q_before
+                    "queue_weighted_expected_cost": milp_budget_price(q_before, cost_usd_scale)
                     * (
                         float(coeffs.exec_cost[(task_id, selection.executor_by_task[task_id])])
                         + (
@@ -2530,6 +2557,10 @@ def run_smoke_test() -> None:
     assert abs(billed_usd - 0.0003) < 1e-12
     assert abs(billed_cost - 300.0) < 1e-8
     assert abs(update_virtual_queue(0.0, billed_cost, 200.0) - 100.0) < 1e-8
+    # Paper eq. (3) on USD: α_λ=1e-6, γ=2e-4, one query at $3e-4 moves λ by 1e-10.
+    lam = advance_budget_price(0.0, 300.0, 200.0, alpha_lambda=1e-6, cost_usd_scale=1e6)
+    assert abs(lam - 1e-10) < 1e-18
+    assert abs(milp_budget_price(lam, 1e6) * 300.0 - lam * 0.0003) < 1e-18
     restricted_plan = Plan(tasks=[TaskNode(id="t1", description="Restricted task", candidate_executors=["cheap"])])
     restricted_selection = solve_jove_selection(
         plan=restricted_plan,
@@ -2694,11 +2725,9 @@ def run_smoke_test() -> None:
     verifier_cfg = lookup_api_config(DEFAULT_OPENROUTER_VERIFIER_MODEL)
     assert abs(verifier_cfg.verifier_cost_factor - 1.0) < 1e-12
     assert abs(verifier_cfg.verifier_cost_unit - verifier_cfg.executor_cost_unit) < 1e-12
-    assert abs(lookup_api_config("openai/gpt-oss-120b").executor_cost_unit - 120.0) < 1e-12
-    assert abs(lookup_api_config("qwen/qwen3-vl-235b-a22b-thinking").executor_cost_unit - 235.0) < 1e-12
-    assert abs(lookup_api_config("mistralai/mistral-large").executor_cost_unit - 130.0) < 1e-12
+    assert lookup_api_config("openai/gpt-oss-120b").executor_cost_unit == 0.0
+    assert lookup_api_config("qwen/qwen3-235b-a22b-2507").executor_cost_unit == 0.0
     assert lookup_api_config("mistralai/mistral-large-2512").model == "mistralai/mistral-large"
-    assert lookup_api_config("mistralai/mistral-large-2512:batch").model == "mistralai/mistral-large"
 
     assert score_answer("<answer>C</answer>", PromptExample("q", "C", answer_type="multiple_choice", metadata={"options": ["a", "b", "c"]}))
     assert score_answer("The answer is \boxed{033}", PromptExample("q", "33", answer_type="numeric"))

@@ -1,20 +1,11 @@
-"""Budget cost accounting in OpenRouter-USD units scaled to match gamma.
 
-Paper/operating point: gamma=300 means $0.0003 per prompt on average, via
-``budget_cost = usd_cost * COST_USD_SCALE`` with ``COST_USD_SCALE = 1e6``.
-
-JOVE expected node costs use MiniLM softmax histories in
-``tools.resource_estimation``. This tracker keeps realized USD bookkeeping
-(per-model EMA of ``usage.cost * COST_USD_SCALE``) for logging and as a
-fallback when a call has no USD usage.
-"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 
-# $0.0003 USD/prompt <-> gamma=300
+# $0.0002 USD/prompt <-> gamma=200
 DEFAULT_COST_USD_SCALE = 1_000_000.0
 
 

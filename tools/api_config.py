@@ -9,51 +9,11 @@ class APIConfig:
     model: str
     executor_cost_unit: float
     safe_latency_prior: float
-    # A verifier call is billed at its actual API price. Its prior may be
-    # overridden by observed verifier calls as the online run proceeds.
     verifier_cost_factor: float = 1.0
     @property
     def verifier_cost_unit(self) -> float:
         return self.executor_cost_unit * self.verifier_cost_factor
 
-
-DEFAULT_NVIDIA_NIM_MODELS = [
-    # Small
-    "meta/llama-3.2-3b-instruct",
-    "nvidia/nemotron-mini-4b-instruct",
-    # Medium
-    "openai/gpt-oss-20b",
-    # Large
-    "meta/llama-3.1-70b-instruct",
-    "nvidia/nemotron-3-ultra-550b-a55b",
-    # Older / previously used pool members (kept; some may be flaky or EOL on NIM).
-    "meta/llama-3.3-70b-instruct",
-    "openai/gpt-oss-120b",
-    "google/gemma-3n-e2b-it",
-    "mistralai/mistral-medium-3.5-128b",
-    "mistralai/mistral-large-3-675b-instruct-2512",
-    "meta/llama-4-maverick-17b-128e-instruct",
-    "deepseek-ai/deepseek-v4-flash",
-]
-
-DEFAULT_VERIFIER_MODELS = [
-    "meta/llama-3.2-3b-instruct",
-    "nvidia/nemotron-mini-4b-instruct",
-    "openai/gpt-oss-20b",
-    "meta/llama-3.1-70b-instruct",
-    "nvidia/nemotron-3-ultra-550b-a55b",
-    # Kept for alias/backward compatibility.
-    "meta/llama-3.3-70b-instruct",
-    "openai/gpt-oss-120b",
-    "deepseek-ai/deepseek-v4-flash",
-    "meta/llama-4-maverick-17b-128e-instruct",
-    "mistralai/mistral-large-3-675b-instruct-2512",
-    "mistralai/mistral-medium-3.5-128b",
-]
-DEFAULT_VERIFIER_MODEL = DEFAULT_VERIFIER_MODELS[0]
-
-# OpenRouter chat/completions pool (IDs from https://openrouter.ai/models).
-# Eight executor APIs from Appendix A.4 of the paper.
 DEFAULT_OPENROUTER_MODELS = [
     "meta-llama/llama-3.2-3b-instruct",
     "google/gemma-3-4b-it",
@@ -69,178 +29,81 @@ DEFAULT_OPENROUTER_VERIFIER_MODEL = "qwen/qwen3-235b-a22b-2507"
 DEFAULT_OPENROUTER_INFERENCE_MODEL = "qwen/qwen3-32b"
 DEFAULT_OPENROUTER_VERIFIER_MODELS = [
     DEFAULT_OPENROUTER_VERIFIER_MODEL,
-    "meta-llama/llama-3.3-70b-instruct",
-    "qwen/qwen3-32b",
-    "mistralai/mistral-small-3.2-24b-instruct",
-    "openai/gpt-oss-20b",
-    "meta-llama/llama-3.2-3b-instruct",
-    "google/gemma-3-4b-it",
-    DEFAULT_OPENROUTER_PLANNER_MODEL,
 ]
+DEFAULT_VERIFIER_MODEL = DEFAULT_OPENROUTER_VERIFIER_MODEL
+DEFAULT_VERIFIER_MODELS = DEFAULT_OPENROUTER_VERIFIER_MODELS
+_NIM_PLANNER_DEFAULT = "meta/llama-3.3-70b-instruct"
+_NIM_VERIFIER_DEFAULT = "meta/llama-3.2-3b-instruct"
 
-DEFAULT_NVIDIA_NIM_CONFIGS: Dict[str, APIConfig] = {
-    "meta/llama-3.2-3b-instruct": APIConfig(
-        model="meta/llama-3.2-3b-instruct",
-        executor_cost_unit=3.0,
-        safe_latency_prior=1.0,
-    ),
-    "nvidia/nemotron-mini-4b-instruct": APIConfig(
-        model="nvidia/nemotron-mini-4b-instruct",
-        executor_cost_unit=4.0,
-        safe_latency_prior=0.8,
-    ),
-    "meta/llama-3.1-8b-instruct": APIConfig(
-        model="meta/llama-3.1-8b-instruct",
-        executor_cost_unit=8.0,
-        safe_latency_prior=1.2,
-    ),
-    "openai/gpt-oss-20b": APIConfig(
-        model="openai/gpt-oss-20b",
-        executor_cost_unit=20.0,
-        safe_latency_prior=1.5,
-    ),
-    "nvidia/nemotron-3-nano-30b-a3b": APIConfig(
-        model="nvidia/nemotron-3-nano-30b-a3b",
-        executor_cost_unit=30.0,
-        safe_latency_prior=2.0,
-    ),
-    "nvidia/llama-3.3-nemotron-super-49b-v1": APIConfig(
-        model="nvidia/llama-3.3-nemotron-super-49b-v1",
-        executor_cost_unit=49.0,
-        safe_latency_prior=2.5,
-    ),
-    "meta/llama-3.1-70b-instruct": APIConfig(
-        model="meta/llama-3.1-70b-instruct",
-        executor_cost_unit=70.0,
-        safe_latency_prior=2.5,
-    ),
-    "mistralai/mistral-nemotron": APIConfig(
-        model="mistralai/mistral-nemotron",
-        executor_cost_unit=40.0,
-        safe_latency_prior=2.0,
-    ),
-    "meta/llama-3.3-70b-instruct": APIConfig(
-        model="meta/llama-3.3-70b-instruct",
-        executor_cost_unit=70.0,
-        safe_latency_prior=2.5,
-    ),
-    "openai/gpt-oss-120b": APIConfig(
-        model="openai/gpt-oss-120b",
-        executor_cost_unit=120.0,
-        safe_latency_prior=4.0,
-    ),
-    "google/gemma-3n-e2b-it": APIConfig(
-        model="google/gemma-3n-e2b-it",
-        executor_cost_unit=2.0,
-        safe_latency_prior=1.5,
-    ),
-    "nvidia/nemotron-3-ultra-550b-a55b": APIConfig(
-        model="nvidia/nemotron-3-ultra-550b-a55b",
-        executor_cost_unit=550.0,
-        safe_latency_prior=8.0,
-    ),
-    "mistralai/mistral-medium-3.5-128b": APIConfig(
-        model="mistralai/mistral-medium-3.5-128b",
-        executor_cost_unit=128.0,
-        safe_latency_prior=5.0,
-    ),
-    "deepseek-ai/deepseek-v4-flash": APIConfig(
-        model="deepseek-ai/deepseek-v4-flash",
-        executor_cost_unit=150.0,
-        safe_latency_prior=1.0,
-    ),
-    "meta/llama-4-maverick-17b-128e-instruct": APIConfig(
-        model="meta/llama-4-maverick-17b-128e-instruct",
-        executor_cost_unit=17.0,
-        safe_latency_prior=2.0,
-    ),
-    "mistralai/mistral-large-3-675b-instruct-2512": APIConfig(
-        model="mistralai/mistral-large-3-675b-instruct-2512",
-        executor_cost_unit=256.0,
-        safe_latency_prior=4.0,
-    ),
-}
 
-# Cost units follow nominal parameter scale (3, 4, 20, 24, 32, 70, 120).
-# qwen3-235b remains in the catalog for verifier-cost lookup only.
+# Decide priors by calling each API at least once. 
 DEFAULT_OPENROUTER_CONFIGS: Dict[str, APIConfig] = {
     "meta-llama/llama-3.2-3b-instruct": APIConfig(
         model="meta-llama/llama-3.2-3b-instruct",
-        executor_cost_unit=3.0,
-        safe_latency_prior=1.0,
+        executor_cost_unit=0.0,
+        safe_latency_prior=0.0,
     ),
     "google/gemma-3-4b-it": APIConfig(
         model="google/gemma-3-4b-it",
-        executor_cost_unit=4.0,
-        safe_latency_prior=0.9,
+        executor_cost_unit=0.0,
+        safe_latency_prior=0.0,
     ),
     "openai/gpt-oss-20b": APIConfig(
         model="openai/gpt-oss-20b",
-        executor_cost_unit=20.0,
-        safe_latency_prior=1.4,
+        executor_cost_unit=0.0,
+        safe_latency_prior=0.0,
     ),
     "mistralai/mistral-small-3.2-24b-instruct": APIConfig(
         model="mistralai/mistral-small-3.2-24b-instruct",
-        executor_cost_unit=24.0,
-        safe_latency_prior=1.6,
+        executor_cost_unit=0.0,
+        safe_latency_prior=0.0,
     ),
     "qwen/qwen3-32b": APIConfig(
         model="qwen/qwen3-32b",
-        executor_cost_unit=32.0,
-        safe_latency_prior=1.8,
+        executor_cost_unit=0.0,
+        safe_latency_prior=0.0,
     ),
     "google/gemini-2.5-flash-lite": APIConfig(
         model="google/gemini-2.5-flash-lite",
-        executor_cost_unit=28.0,
-        safe_latency_prior=1.2,
+        executor_cost_unit=0.0,
+        safe_latency_prior=0.0,
     ),
     "meta-llama/llama-3.3-70b-instruct": APIConfig(
         model="meta-llama/llama-3.3-70b-instruct",
-        executor_cost_unit=70.0,
-        safe_latency_prior=2.8,
+        executor_cost_unit=0.0,
+        safe_latency_prior=0.0,
     ),
     "openai/gpt-oss-120b": APIConfig(
         model="openai/gpt-oss-120b",
-        executor_cost_unit=120.0,
-        safe_latency_prior=4.0,
+        executor_cost_unit=0.0,
+        safe_latency_prior=0.0,
     ),
-    # Live large arm (replaced mistral-large in the mid+large OpenRouter pool).
     "qwen/qwen3-vl-235b-a22b-thinking": APIConfig(
         model="qwen/qwen3-vl-235b-a22b-thinking",
-        executor_cost_unit=235.0,
-        safe_latency_prior=6.0,
-    ),
-    # Old-run / catalog-lookup: prior live large arm + Batch-API-only aliases.
-    "mistralai/mistral-large": APIConfig(
-        model="mistralai/mistral-large",
-        executor_cost_unit=130.0,
-        safe_latency_prior=4.5,
-    ),
-    "mistralai/mistral-large-2512:batch": APIConfig(
-        model="mistralai/mistral-large",
-        executor_cost_unit=130.0,
-        safe_latency_prior=4.5,
+        executor_cost_unit=0.0,
+        safe_latency_prior=0.0,
     ),
     "mistralai/mistral-large-2512": APIConfig(
         model="mistralai/mistral-large",
-        executor_cost_unit=130.0,
-        safe_latency_prior=4.5,
+        executor_cost_unit=0.0,
+        safe_latency_prior=0.0,
     ),
     "qwen/qwen3-235b-a22b-2507": APIConfig(
         model="qwen/qwen3-235b-a22b-2507",
-        executor_cost_unit=120.0,
-        safe_latency_prior=3.5,
+        executor_cost_unit=0.0,
+        safe_latency_prior=0.0,
     ),
     # Verifier only. 2.4T-total MoE flagship; keep catalog unit above 235b.
     "qwen/qwen3.8-max-0902": APIConfig(
         model="qwen/qwen3.8-max-0902",
-        executor_cost_unit=200.0,
-        safe_latency_prior=5.0,
+        executor_cost_unit=0.0,
+        safe_latency_prior=0.0,
     ),
 }
+# Kept so non-OpenRouter callers resolve to the same paper pool.
+DEFAULT_NVIDIA_NIM_MODELS = DEFAULT_OPENROUTER_MODELS
+DEFAULT_NVIDIA_NIM_CONFIGS = DEFAULT_OPENROUTER_CONFIGS
 
-_NIM_PLANNER_DEFAULT = "meta/llama-3.3-70b-instruct"
-_NIM_VERIFIER_DEFAULT = "meta/llama-3.2-3b-instruct"
 
 
 def _model_aliases(candidates: Iterable[str]) -> Dict[str, str]:

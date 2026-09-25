@@ -40,7 +40,6 @@ class JoveInputs:
 
 
 def verification_information_gain(uncertainty: float) -> float:
-    """D-optimal verification gain I(u) = (1/2) log(1 + u^2) from paper eq. (14)."""
     u = max(float(uncertainty), 0.0)
     return 0.5 * math.log(1.0 + u * u)
 
@@ -301,5 +300,10 @@ def _selection_from_pairs(
     )
 
 
-def update_virtual_queue(q_t: float, realized_cost: float, gamma: float) -> float:
-    return max(float(q_t) + float(realized_cost) - float(gamma), 0.0)
+def update_virtual_queue(
+    q_t: float,
+    realized_cost: float,
+    gamma: float,
+    alpha_lambda: float = 1.0,
+) -> float:
+    return max(float(q_t) + float(alpha_lambda) * (float(realized_cost) - float(gamma)), 0.0)

@@ -1,10 +1,3 @@
-"""Feature-weighted cost/latency estimators for JOVE.
-
-JOVE uses paper eqs. (11)–(12): softmax-weighted MiniLM cost mean and latency
-quantile, shrinking toward catalog priors. Empty histories fall back to
-model-specific priors; latency/cost prior weight is rho_n = n0 / (n0 + n).
-"""
-
 from __future__ import annotations
 
 from collections import defaultdict, deque
