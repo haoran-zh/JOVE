@@ -41,7 +41,6 @@ from tools.cost_accounting import (
     DEFAULT_COST_USD_SCALE,
     ModelBudgetCostTracker,
     realized_prompt_costs_from_usages,
-    queue_budget_with_verifier_factor,
 )
 from tools.datasets import (
     DATASET_CHOICES,
@@ -239,7 +238,7 @@ def resolve_reasoning_profile(args: argparse.Namespace, example: PromptExample) 
     elif aggregation_mode == "on":
         use_final_aggregation = True
     else:
-        use_final_aggregation = profile_name in {REASONING_PROFILE_HARD, REASONING_PROFILE_LIVEBENCH}
+        use_final_aggregation = False
 
     use_full_context = _resolve_mode_bool(
         getattr(args, "reasoning_full_context", "auto"),
@@ -376,7 +375,6 @@ def build_metric_trajectories(metrics: List[Mapping[str, object]]) -> Dict[str, 
                 "latency_feasible": item.get("latency_feasible"),
                 "planned_call_count": item.get("planned_call_count"),
                 "verifier_calls": item.get("verifier_calls"),
-                "selected_baseline_model": item.get("selected_baseline_model"),
             }
         )
     return {
@@ -590,17 +588,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=os.environ.get("API_RECRUITER_GRAPH_NODE_COUNTS", "2,3,4,5"),
         help="Comma-separated planner node counts. Each query is expanded into one DAG per count, then shuffled. Empty disables.",
     )
-    parser.add_argument("--mu", type=float, default=12.0, help="Prompt-level user-facing safe latency deadline.")
+    parser.add_argument("--mu", type=float, default=16.0, help="End-to-end response deadline in seconds, including planning and allocation.")
     parser.add_argument(
         "--latency-tolerance-delta",
         type=float,
         default=float(os.environ.get("API_RECRUITER_LATENCY_TOLERANCE_DELTA", "0.1")),
         help="Global per-prompt latency violation tolerance delta; split uniformly across task nodes.",
     )
-    parser.add_argument("--gamma", type=float, default=150.0, help="Long-term per-prompt budget target (USD * --cost-usd-scale; default scale 1e6 maps gamma=300 to $0.0003).")
+    parser.add_argument("--gamma", type=float, default=200.0, help="Long-term per-query budget (USD * --cost-usd-scale; default 200 = $0.0002).")
     parser.add_argument("--V", type=float, default=None, help=argparse.SUPPRESS)  # Deprecated; ignored.
-    parser.add_argument("--k-c", type=float, default=float(os.environ.get("API_RECRUITER_K_C", "1e-5")), help="Virtual-queue cost coefficient k_c.")
-    parser.add_argument("--k-v", type=float, default=float(os.environ.get("API_RECRUITER_K_V", "0.2")), help="Verifier D-optimal information-gain coefficient k_v (I(u)=0.5*log(1+u^2))")
+    parser.add_argument("--k-c", type=float, default=float(os.environ.get("API_RECRUITER_K_C", "1e-6")), help="Budget-price step size alpha_lambda in scaled-cost units.")
+    parser.add_argument("--k-v", type=float, default=float(os.environ.get("API_RECRUITER_K_V", "5.0")), help="Verifier D-optimal information-gain coefficient k_v (I(u)=0.5*log(1+u^2))")
     parser.add_argument(
         "--cost-usd-scale",
         type=float,
@@ -609,13 +607,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--beta", type=float, default=0.25, help="LinUCB optimism multiplier.")
     parser.add_argument("--lambda-reg", type=float, default=1.0)
-    parser.add_argument("--prior-mean", type=float, default=0.5)
+    parser.add_argument("--prior-mean", type=float, default=0.0, help="Quality-model offset; use 0 for the paper's ridge model.")
     parser.add_argument("--verifier-threshold", type=float, default=0.5, help=argparse.SUPPRESS)
     parser.add_argument("--verifier-prior-scale", type=float, default=0.0, help=argparse.SUPPRESS)
     parser.add_argument("--verifier-prior-half-life", type=float, default=0.0, help=argparse.SUPPRESS)
     parser.add_argument("--embedding-model", default="sentence-transformers/all-MiniLM-L6-v2")
-    parser.add_argument("--max-parallel-tasks", type=int, default=int(os.environ.get("API_RECRUITER_MAX_PARALLEL_TASKS", "1")), help="Max ready DAG tasks (and verifiers) to run concurrently. Use >1 for normal/high-RPM parallel mode. Forced to 1 when --slow is set.")
-    parser.add_argument("--request-interval", type=float, default=float(os.environ.get("API_RECRUITER_REQUEST_INTERVAL", "2.0")), help="Global minimum seconds between planner/executor/verifier HTTP request starts. Default 2.0s = 30 RPM. Use 0 with high-RPM paid APIs for true overlap.")
+    parser.add_argument("--max-parallel-tasks", type=int, default=int(os.environ.get("API_RECRUITER_MAX_PARALLEL_TASKS", "8")), help="Max ready DAG tasks (and verifiers) to run concurrently. Forced to 1 when --slow is set.")
+    parser.add_argument("--request-interval", type=float, default=float(os.environ.get("API_RECRUITER_REQUEST_INTERVAL", "0")), help="Global minimum seconds between planner/executor/verifier HTTP request starts.")
     parser.add_argument("--slow", action="store_true", help="Compatibility slow mode: enforce at least --slow-interval between request starts and force --max-parallel-tasks 1.")
     parser.add_argument("--slow-interval", type=float, default=float(os.environ.get("API_RECRUITER_SLOW_INTERVAL", "1.5")), help="Compatibility interval floor used when --slow is set.")
     parser.add_argument("--rate-limit-max-retries", type=int, default=int(os.environ.get("API_RECRUITER_RATE_LIMIT_MAX_RETRIES", "5")), help="Maximum retries for rate-limit failures on the same model/API.")
@@ -1578,17 +1576,13 @@ def update_quality_from_verifiers(
         if verifier is None:
             continue
 
-        executor_failure_observed = (
-            getattr(result, "failed", False)
-            and getattr(result, "final_action", None) == "skipped_executor_failure"
-        )
-        if getattr(result, "failed", False) and not executor_failure_observed:
+        if getattr(result, "failed", False):
             continue
 
         labels.append(
             ServiceLabel(
                 feature=tables.exec_features[(task_id, executor)],
-                label=0.0 if executor_failure_observed else (1.0 if result.correct else 0.0),
+                label=1.0 if result.correct else 0.0,
                 weight=1.0,
             )
         )
@@ -1606,7 +1600,7 @@ def run_prompt_loop(args: argparse.Namespace, artifacts: Optional[TrialArtifacts
     if not getattr(args, "llm_judge_model", None):
         args.llm_judge_model = verifier_model
     verifier_candidates = [verifier_model]
-    config_models = [*api_candidates, verifier_model]
+    config_models = [*api_candidates, verifier_model, args.planner_model]
     api_configs = build_api_configs(dict.fromkeys(config_models).keys())
     examples = build_examples(args)
     args.latency_tolerance_delta = validate_latency_tolerance(
@@ -1772,6 +1766,14 @@ def run_prompt_loop(args: argparse.Namespace, artifacts: Optional[TrialArtifacts
             continue
         planner_stage_wall_time = time.perf_counter() - planner_start
         planner_api_latency = planner_chat_result.latency_seconds
+        planner_fallback_cost = (
+            float(api_configs[args.planner_model].executor_cost_unit)
+            if args.planner_model in api_configs else 0.0
+        )
+        planner_realized_usd, planner_realized_cost = realized_prompt_costs_from_usages(
+            [(args.planner_model, planner_chat_result.usage, planner_fallback_cost)],
+            scale=cost_usd_scale,
+        )
         if planner_chat_result.retry_count:
             rate_limit_retries_by_model_stage[f"planner:{args.planner_model}"] += planner_chat_result.retry_count
         planner_raw_response = planner_response_to_text(planner_chat_result)
@@ -1786,6 +1788,7 @@ def run_prompt_loop(args: argparse.Namespace, artifacts: Optional[TrialArtifacts
         except ValueError as exc:
             prompt_elapsed = time.perf_counter() - prompt_start
             planner_skip_count += 1
+            q_t = update_virtual_queue(q_t, planner_realized_cost, args.gamma)
             print(
                 f"[planner_skip] prompt_index={prompt_index} category=planner_parse_failure model={args.planner_model} "
                 f"status_code={planner_chat_result.status_code} retry_count={planner_chat_result.retry_count} "
@@ -1823,11 +1826,12 @@ def run_prompt_loop(args: argparse.Namespace, artifacts: Optional[TrialArtifacts
                     "virtual_queue_before": q_before,
                     "virtual_queue_after": q_t,
                     "queue_budget_gamma": args.gamma,
-                    "budget_feasible": None,
+                    "budget_feasible": planner_realized_cost <= args.gamma,
                     "planned_call_count": 0,
-                    "cost": 0.0,
-                    "expected_cost": 0.0,
-                    "realized_cost": 0.0,
+                    "cost": planner_realized_cost,
+                    "expected_cost": planner_realized_cost,
+                    "realized_cost": planner_realized_cost,
+                    "realized_usd": planner_realized_usd,
                     "planner_stage_wall_time": planner_stage_wall_time,
                     "planner_api_latency_seconds": planner_api_latency,
                     "realized_total_latency": prompt_elapsed,
@@ -1900,17 +1904,28 @@ def run_prompt_loop(args: argparse.Namespace, artifacts: Optional[TrialArtifacts
                 f"k_c={args.k_c:.3g} k_v={args.k_v:.3g}",
                 flush=True,
             )
-            selection = solve_jove_selection(
-                plan=plan,
-                api_candidates=api_candidates,
-                coeffs=coeffs,
-                mu_t=args.mu,
-                q_t=q_t,
-                k_c=args.k_c,
-                k_v=args.k_v,
-                fixed_verifier_model=verifier_model,
-                allow_self_verification=False,
-            )
+            for _allocation_attempt in range(3):
+                remaining_deadline = args.mu - (time.perf_counter() - prompt_start)
+                if remaining_deadline <= 0:
+                    raise RuntimeError("No deadline-feasible JOVE assignment: planning/allocation exhausted the deadline.")
+                selection = solve_jove_selection(
+                    plan=plan,
+                    api_candidates=api_candidates,
+                    coeffs=coeffs,
+                    mu_t=remaining_deadline,
+                    q_t=q_t,
+                    k_c=args.k_c,
+                    k_v=args.k_v,
+                    fixed_verifier_model=verifier_model,
+                    allow_self_verification=False,
+                )
+                allocation_elapsed = time.perf_counter() - prompt_start
+                safe_sink_latency = max(selection.finish_time[sink] for sink in plan.sinks())
+                if allocation_elapsed + safe_sink_latency <= args.mu + 1e-8:
+                    break
+            else:
+                raise RuntimeError("No deadline-feasible JOVE assignment after allocation overhead.")
+            planned_overhead_seconds = allocation_elapsed
         except RuntimeError as exc:
             if not is_jove_infeasible_error(exc):
                 raise
@@ -1923,6 +1938,7 @@ def run_prompt_loop(args: argparse.Namespace, artifacts: Optional[TrialArtifacts
                 budget_infeasible_count += 1
             optimization_stage_wall_time = time.perf_counter() - optimization_stage_start
             prompt_elapsed = time.perf_counter() - prompt_start
+            q_t = update_virtual_queue(q_t, planner_realized_cost, args.gamma)
             skip_reason = "latency_infeasible" if is_latency_infeasible else "budget_infeasible"
             skip_stage = "latency" if is_latency_infeasible else "budget"
             print(
@@ -1950,15 +1966,16 @@ def run_prompt_loop(args: argparse.Namespace, artifacts: Optional[TrialArtifacts
                     "virtual_queue_before": q_before,
                     "virtual_queue_after": q_t,
                     "queue_budget_gamma": args.gamma,
-                    "budget_feasible": True if is_latency_infeasible else False,
+                    "budget_feasible": planner_realized_cost <= args.gamma,
                     "latency_feasible": False if is_latency_infeasible else None,
                     "latency_tolerance_delta": args.latency_tolerance_delta,
                     "latency_node_tolerance": latency_node_tolerance,
                     "latency_quantile_level": latency_quantile_level,
                     "planned_call_count": len(plan.tasks),
-                    "cost": 0.0,
-                    "expected_cost": 0.0,
-                    "realized_cost": 0.0,
+                    "cost": planner_realized_cost,
+                    "expected_cost": planner_realized_cost,
+                    "realized_cost": planner_realized_cost,
+                    "realized_usd": planner_realized_usd,
                     "planner_stage_wall_time": planner_stage_wall_time,
                     "planner_api_latency_seconds": planner_api_latency,
                     "feature_stage_wall_time": feature_stage_wall_time,
@@ -2045,85 +2062,7 @@ def run_prompt_loop(args: argparse.Namespace, artifacts: Optional[TrialArtifacts
             print(f"--- {task_id} | executor={result.model} | latency={result.latency_seconds:.2f}s{failure} ---", flush=True)
             print(result.output, flush=True)
 
-        print("[5/8] Running selected fixed-verifier calls ...", flush=True)
-        verification_stage_start = time.perf_counter()
-        verifier_results = run_verifiers(
-            client=client,
-            prompt=example.question,
-            plan=plan,
-            executor_by_task=selection.executor_by_task,
-            verifier_by_task=selection.verifier_by_task,
-            outputs=outputs,
-            max_parallel_tasks=effective_parallelism,
-            execution_results=execution_results,
-            answer_instruction=example.answer_instruction,
-            verifier_max_retries=args.verifier_max_retries,
-            verifier_retry_delay_seconds=args.verifier_retry_delay,
-            include_full_prompt=profile_config.use_full_context,
-            calibrated_for_reasoning=profile_config.use_calibrated_verifier,
-        )
-        verification_stage_wall_time = time.perf_counter() - verification_stage_start
-        for result in verifier_results.values():
-            if result.retry_count and result.final_action != "skipped_executor_failure":
-                rate_limit_retries_by_model_stage[f"verify:{result.verifier}"] += result.retry_count
-            if result.failed and result.final_action not in {"skipped_executor_failure", "skip_quality_update"}:
-                verifier_failures_by_model[result.verifier] += 1
-        for task_id, result in verifier_results.items():
-            failure = ""
-            if result.failed:
-                failure = (
-                    f" failed=true category={result.failure_category} status_code={result.status_code} "
-                    f"retry_count={result.retry_count} action={result.final_action}"
-                )
-            print(f"  {task_id}: verifier_call=1 verifier={result.verifier} correct={result.correct}{failure} reason={result.reason[:120]}", flush=True)
-
-        print("[6/8] Updating unified service-quality model and resource estimates ...", flush=True)
-        update_count = update_quality_from_verifiers(
-            quality_model=quality_model,
-            selection_pairs=selection.as_pairs(),
-            verifier_results=verifier_results,
-            tables=tables,
-        )
-        execution_latency = {task_id: result.latency_seconds for task_id, result in execution_results.items()}
-        latency_update_count = 0
-        latency_update_skipped_failed = 0
-        for task_id, result in execution_results.items():
-            if getattr(result, "failed", False):
-                latency_update_skipped_failed += 1
-                continue
-            legacy = float(api_configs[result.model].executor_cost_unit)  # type: ignore[attr-defined]
-            observe_executor_call(
-                resource_model,
-                result.model,
-                tables.exec_features[(task_id, result.model)],
-                result.usage,
-                legacy,
-                result.latency_seconds,
-                scale=cost_usd_scale,
-            )
-            latency_update_count += 1
-        for task_id, result in verifier_results.items():
-            if result.final_action == "skipped_executor_failure":
-                continue
-            legacy = float(api_configs[result.verifier].verifier_cost_unit) if result.verifier in api_configs else 0.0  # type: ignore[attr-defined]
-            ver_factor = float(api_configs[result.verifier].verifier_cost_factor) if result.verifier in api_configs else 0.01  # type: ignore[attr-defined]
-            observe_verifier_call(
-                resource_model,
-                result.verifier,
-                tables.ver_features[(task_id, result.verifier)],
-                result.usage,
-                legacy,
-                result.latency_seconds,
-                scale=cost_usd_scale,
-                cost_factor=ver_factor,
-            )
-        print(
-            f"  quality_updates={update_count} total_model_updates={quality_model.num_updates} "
-            f"latency_updates={latency_update_count} skipped_failed_latency_updates={latency_update_skipped_failed}",
-            flush=True,
-        )
-
-        print("[7/8] Building final answer and updating budget queue ...", flush=True)
+        print("[5/8] Building the response from the sink task ...", flush=True)
         final_task_id = plan.topological_order()[-1]
         sink_final_answer = outputs[final_task_id].strip()
         final_answer = sink_final_answer
@@ -2201,6 +2140,84 @@ def run_prompt_loop(args: argparse.Namespace, artifacts: Optional[TrialArtifacts
         print(f"[final_answer_source] {final_answer_source}", flush=True)
         print(f"[final_answer] {final_answer}", flush=True)
         is_correct = score_answer(final_answer, example)
+        response_elapsed = time.perf_counter() - prompt_start
+
+        print("[6/8] Running selected fixed-verifier calls after response delivery ...", flush=True)
+        verification_stage_start = time.perf_counter()
+        verifier_results = run_verifiers(
+            client=client,
+            prompt=example.question,
+            plan=plan,
+            executor_by_task=selection.executor_by_task,
+            verifier_by_task=selection.verifier_by_task,
+            outputs=outputs,
+            max_parallel_tasks=effective_parallelism,
+            execution_results=execution_results,
+            answer_instruction=example.answer_instruction,
+            verifier_max_retries=args.verifier_max_retries,
+            verifier_retry_delay_seconds=args.verifier_retry_delay,
+            include_full_prompt=profile_config.use_full_context,
+            calibrated_for_reasoning=profile_config.use_calibrated_verifier,
+        )
+        verification_stage_wall_time = time.perf_counter() - verification_stage_start
+        for result in verifier_results.values():
+            if result.retry_count and result.final_action != "skipped_executor_failure":
+                rate_limit_retries_by_model_stage[f"verify:{result.verifier}"] += result.retry_count
+            if result.failed and result.final_action not in {"skipped_executor_failure", "skip_quality_update"}:
+                verifier_failures_by_model[result.verifier] += 1
+        for task_id, result in verifier_results.items():
+            failure = ""
+            if result.failed:
+                failure = (
+                    f" failed=true category={result.failure_category} status_code={result.status_code} "
+                    f"retry_count={result.retry_count} action={result.final_action}"
+                )
+            print(f"  {task_id}: verifier_call=1 verifier={result.verifier} correct={result.correct}{failure} reason={result.reason[:120]}", flush=True)
+
+        print("[7/8] Updating quality and resource estimates ...", flush=True)
+        update_count = update_quality_from_verifiers(
+            quality_model=quality_model,
+            selection_pairs=selection.as_pairs(),
+            verifier_results=verifier_results,
+            tables=tables,
+        )
+        execution_latency = {task_id: result.latency_seconds for task_id, result in execution_results.items()}
+        latency_update_count = 0
+        latency_update_skipped_failed = 0
+        for task_id, result in execution_results.items():
+            if getattr(result, "failed", False):
+                latency_update_skipped_failed += 1
+                continue
+            legacy = float(api_configs[result.model].executor_cost_unit)  # type: ignore[attr-defined]
+            observe_executor_call(
+                resource_model,
+                result.model,
+                tables.exec_features[(task_id, result.model)],
+                result.usage,
+                legacy,
+                result.latency_seconds,
+                scale=cost_usd_scale,
+            )
+            latency_update_count += 1
+        for task_id, result in verifier_results.items():
+            if result.final_action == "skipped_executor_failure":
+                continue
+            legacy = float(api_configs[result.verifier].verifier_cost_unit) if result.verifier in api_configs else 0.0  # type: ignore[attr-defined]
+            observe_verifier_call(
+                resource_model,
+                result.verifier,
+                tables.ver_features[(task_id, result.verifier)],
+                result.usage,
+                legacy,
+                result.latency_seconds,
+                scale=cost_usd_scale,
+            )
+        print(
+            f"  quality_updates={update_count} total_model_updates={quality_model.num_updates} "
+            f"latency_updates={latency_update_count} skipped_failed_latency_updates={latency_update_skipped_failed}",
+            flush=True,
+        )
+
         llm_judge_result = run_optional_llm_judge(args, client, example, final_answer)
         if llm_judge_result is not None:
             if llm_judge_result.retry_count:
@@ -2210,7 +2227,7 @@ def run_prompt_loop(args: argparse.Namespace, artifacts: Optional[TrialArtifacts
                 f"model={llm_judge_result.model} raw={llm_judge_result.raw_output}",
                 flush=True,
             )
-        expected_cost = float(selection.expected_cost) + float(final_aggregation_expected_cost)
+        expected_cost = planner_realized_cost + float(selection.expected_cost) + float(final_aggregation_expected_cost)
         non_verifier_usages = []
         verifier_usages = []
         if planner_chat_result is not None:
@@ -2230,26 +2247,19 @@ def run_prompt_loop(args: argparse.Namespace, artifacts: Optional[TrialArtifacts
             non_verifier_usages.append((final_aggregation_result.model, final_aggregation_result.usage, legacy))
             cost_tracker.update(final_aggregation_result.model, final_aggregation_result.usage)
         if llm_judge_result is not None:
-            judge_fallback = float(api_configs[llm_judge_result.model].executor_cost_unit) if llm_judge_result.model in api_configs else 0.0  # type: ignore[attr-defined]
-            non_verifier_usages.append((llm_judge_result.model, llm_judge_result.usage, judge_fallback))
-            cost_tracker.update(llm_judge_result.model, llm_judge_result.usage)
-        verifier_cost_factor = (
-            float(api_configs[verifier_model].verifier_cost_factor)  # type: ignore[attr-defined]
-            if verifier_model in api_configs
-            else 0.01
+            # Diagnostic scoring is outside the inference policy and its budget.
+            pass
+        realized_usd, realized_cost = realized_prompt_costs_from_usages(
+            [*non_verifier_usages, *verifier_usages], scale=cost_usd_scale
         )
-        realized_usd, realized_cost, queue_realized_cost = queue_budget_with_verifier_factor(
-            non_verifier_usages,
-            verifier_usages,
-            verifier_cost_factor=verifier_cost_factor,
-            scale=cost_usd_scale,
-        )
+        queue_realized_cost = realized_cost
+        verifier_cost_factor = 1.0
         planned_call_count = planned_selection_call_count(plan, selection)
         budget_feasible = realized_cost <= args.gamma + 1e-8
         q_t = update_virtual_queue(q_t, queue_realized_cost, args.gamma)
         realized_finish = realized_finish_times(plan, execution_latency)
         safe_sink_latency = max(selection.finish_time[sink] for sink in plan.sinks())
-        latency_feasible = safe_sink_latency <= args.mu + 1e-8
+        latency_feasible = planned_overhead_seconds + safe_sink_latency <= args.mu + 1e-8
         realized_sink_latency = max(realized_finish[sink] for sink in plan.sinks())
         executor_api_latency_sum = sum(result.latency_seconds for result in execution_results.values())
         verifier_api_latency_sum = sum(result.latency_seconds for result in verifier_results.values())
@@ -2345,7 +2355,6 @@ def run_prompt_loop(args: argparse.Namespace, artifacts: Optional[TrialArtifacts
             "k_c": args.k_c,
             "k_v": args.k_v,
             "selection_policy": "jove",
-            "selected_baseline_model": None,
             "planned_call_count": planned_call_count,
             "budget_feasible": budget_feasible,
             "latency_feasible": latency_feasible,
@@ -2367,7 +2376,7 @@ def run_prompt_loop(args: argparse.Namespace, artifacts: Optional[TrialArtifacts
             "constraint_safe_latency": safe_sink_latency,
             "constraint_realized_latency": realized_sink_latency,
             "realized_verifier_stage_latency": verification_stage_wall_time,
-            "realized_total_latency": prompt_elapsed,
+            "realized_total_latency": response_elapsed,
             "realized_prompt_wall_time_seconds": prompt_elapsed,
             "realized_api_latency_seconds": executor_api_latency_sum + verifier_api_latency_sum + final_aggregation_api_latency,
             "executor_api_latency_sum": executor_api_latency_sum,
@@ -2465,6 +2474,16 @@ def run_prompt_loop(args: argparse.Namespace, artifacts: Optional[TrialArtifacts
 
 
 def run_smoke_test() -> None:
+    from tools.optimizer import _objective_coeff, NO_VERIFIER
+    import numpy as np
+
+    ridge = WeightedLinearQualityModel(dimension=1, lambda_reg=1.0)
+    assert ridge.predict(np.array([1.0])) == 0.0
+    ridge.update(np.array([1.0]), 1.0)
+    assert abs(ridge.predict(np.array([1.0])) - 0.5) < 1e-12
+    ridge.theta = np.array([-0.5])
+    assert ridge.ucb(np.array([1.0]), beta=0.1) == 0.0
+
     plan = Plan(
         tasks=[
             TaskNode(id="t1", description="Find the anchor entity", task_type="Anchor Identification"),
@@ -2501,6 +2520,26 @@ def run_smoke_test() -> None:
         verifier_cost=verifier_cost,
         safe_latency=safe_latency,
     )
+    normalized_score = _objective_coeff("t1", "cheap", NO_VERIFIER, coeffs, 0.0, 1.0, 5.0, 2)
+    assert abs(normalized_score - 0.30) < 1e-12
+    verifier_score = _objective_coeff("t1", "cheap", "strong", coeffs, 0.0, 1.0, 5.0, 2)
+    assert abs(verifier_score - (0.30 + 2.5 * uncertainty_reduction(10.0))) < 1e-12
+    billed_usd, billed_cost = realized_prompt_costs_from_usages(
+        [("exec", {"cost": 0.0001}, 0.0), ("ver", {"cost": 0.0002}, 0.0)]
+    )
+    assert abs(billed_usd - 0.0003) < 1e-12
+    assert abs(billed_cost - 300.0) < 1e-8
+    assert abs(update_virtual_queue(0.0, billed_cost, 200.0) - 100.0) < 1e-8
+    restricted_plan = Plan(tasks=[TaskNode(id="t1", description="Restricted task", candidate_executors=["cheap"])])
+    restricted_selection = solve_jove_selection(
+        plan=restricted_plan,
+        api_candidates=apis,
+        coeffs=coeffs,
+        mu_t=2.0,
+        q_t=0.0,
+        fixed_verifier_model="strong",
+    )
+    assert restricted_selection.executor_by_task == {"t1": "cheap"}
     assert abs(split_latency_tolerance(0.1, 2) - 0.05) < 1e-12
     run_resource_estimation_self_checks()
 
@@ -2627,14 +2666,14 @@ def run_smoke_test() -> None:
     )
     from tools.client import DEFAULT_OPENROUTER_API_KEY_NAME, OPENROUTER_BASE_URL, PROVIDER_OPENROUTER
 
-    assert len(DEFAULT_OPENROUTER_MODELS) == 6
-    assert "meta-llama/llama-3.2-3b-instruct" not in DEFAULT_OPENROUTER_MODELS
-    assert "google/gemma-3-4b-it" not in DEFAULT_OPENROUTER_MODELS
+    assert len(DEFAULT_OPENROUTER_MODELS) == 8
+    assert "meta-llama/llama-3.2-3b-instruct" in DEFAULT_OPENROUTER_MODELS
+    assert "google/gemma-3-4b-it" in DEFAULT_OPENROUTER_MODELS
     assert "qwen/qwen3-235b-a22b-2507" not in DEFAULT_OPENROUTER_MODELS
     assert "qwen/qwen3.8-max-0902" not in DEFAULT_OPENROUTER_MODELS
     assert "openai/gpt-oss-120b" in DEFAULT_OPENROUTER_MODELS
-    assert "qwen/qwen3-vl-235b-a22b-thinking" in DEFAULT_OPENROUTER_MODELS
-    assert "mistralai/mistral-large" not in DEFAULT_OPENROUTER_MODELS
+    assert "qwen/qwen3-vl-235b-a22b-thinking" not in DEFAULT_OPENROUTER_MODELS
+    assert "mistralai/mistral-large-2512" in DEFAULT_OPENROUTER_MODELS
     assert DEFAULT_OPENROUTER_PLANNER_MODEL == "google/gemini-2.5-flash-lite"
     assert DEFAULT_OPENROUTER_PLANNER_MODEL in DEFAULT_OPENROUTER_CONFIGS
     for model_id in DEFAULT_OPENROUTER_MODELS:
@@ -2652,9 +2691,9 @@ def run_smoke_test() -> None:
     assert openrouter_args.api_key_name == DEFAULT_OPENROUTER_API_KEY_NAME
     from tools.api_config import lookup_api_config
 
-    verifier_cfg = lookup_api_config("qwen/qwen3.8-max-0902")
-    assert abs(verifier_cfg.verifier_cost_factor - 0.01) < 1e-12
-    assert abs(verifier_cfg.verifier_cost_unit - 2.0) < 1e-12
+    verifier_cfg = lookup_api_config(DEFAULT_OPENROUTER_VERIFIER_MODEL)
+    assert abs(verifier_cfg.verifier_cost_factor - 1.0) < 1e-12
+    assert abs(verifier_cfg.verifier_cost_unit - verifier_cfg.executor_cost_unit) < 1e-12
     assert abs(lookup_api_config("openai/gpt-oss-120b").executor_cost_unit - 120.0) < 1e-12
     assert abs(lookup_api_config("qwen/qwen3-vl-235b-a22b-thinking").executor_cost_unit - 235.0) < 1e-12
     assert abs(lookup_api_config("mistralai/mistral-large").executor_cost_unit - 130.0) < 1e-12
@@ -2852,9 +2891,8 @@ def run_smoke_test() -> None:
         verifier_results={"t1": executor_failed_verifier_result},
         tables=executor_failure_tables,
     )
-    assert executor_failure_updates == 1
-    assert executor_failure_model.labels[0].label == 0.0
-    assert executor_failure_model.labels[0].weight == 1.0
+    assert executor_failure_updates == 0
+    assert executor_failure_model.labels == []
 
     reliable_verifier_result = VerifierResult(
         task_id="t1",
@@ -2914,7 +2952,7 @@ def run_smoke_test() -> None:
     assert aime_profile.name == REASONING_PROFILE_HARD
     assert aime_profile.planner_max_tasks == 5
     assert aime_profile.executor_max_tokens == 1024
-    assert aime_profile.use_final_aggregation
+    assert not aime_profile.use_final_aggregation
     assert not aime_profile.use_full_context
     assert not aime_profile.use_answer_normalization
     assert not aime_profile.use_calibrated_verifier
@@ -2933,7 +2971,7 @@ def run_smoke_test() -> None:
     assert livebench_profile.name == REASONING_PROFILE_LIVEBENCH
     assert livebench_profile.planner_max_tasks == 3
     assert livebench_profile.executor_max_tokens == 1024
-    assert livebench_profile.use_final_aggregation
+    assert not livebench_profile.use_final_aggregation
     assert livebench_profile.use_full_context
     assert livebench_profile.use_answer_normalization
     assert livebench_profile.use_calibrated_verifier

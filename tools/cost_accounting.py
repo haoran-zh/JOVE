@@ -113,7 +113,6 @@ def observe_call_usages(
             total_budget += budget
     return total_usd, total_budget
 
-
 def realized_prompt_costs_from_usages(
     calls: Iterable[Tuple[str, Optional[Mapping[str, Any]], float]],
     *,
@@ -135,24 +134,3 @@ def realized_prompt_costs_from_usages(
             total_usd += float(usd)
             total_budget += usd_to_budget_cost(usd, scale=scale)
     return total_usd, total_budget
-
-
-def queue_budget_with_verifier_factor(
-    non_verifier_calls: Iterable[Tuple[str, Optional[Mapping[str, Any]], float]],
-    verifier_calls: Iterable[Tuple[str, Optional[Mapping[str, Any]], float]],
-    *,
-    verifier_cost_factor: float,
-    scale: float = DEFAULT_COST_USD_SCALE,
-) -> Tuple[float, float, float]:
-    """Budget cost for the virtual queue with discounted verifier spend.
-
-    Returns ``(total_usd, full_budget, queue_budget)`` where ``total_usd`` /
-    ``full_budget`` keep true billed verifier cost for logging, and
-    ``queue_budget`` charges ``verifier_cost_factor ×`` verifier budget only
-    (paper-style cheap-verifier assumption).
-    """
-    non_usd, non_budget = realized_prompt_costs_from_usages(non_verifier_calls, scale=scale)
-    ver_usd, ver_budget = realized_prompt_costs_from_usages(verifier_calls, scale=scale)
-    factor = float(verifier_cost_factor)
-    queue_budget = float(non_budget) + factor * float(ver_budget)
-    return float(non_usd + ver_usd), float(non_budget + ver_budget), float(queue_budget)

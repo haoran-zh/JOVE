@@ -20,7 +20,7 @@ class WeightedLinearQualityModel:
     prediction is prior_mean for every role/API/context feature.
     """
 
-    def __init__(self, dimension: int, lambda_reg: float = 1.0, prior_mean: float = 0.5) -> None:
+    def __init__(self, dimension: int, lambda_reg: float = 1.0, prior_mean: float = 0.0) -> None:
         if dimension <= 0:
             raise ValueError("dimension must be positive")
         if lambda_reg <= 0:
@@ -58,7 +58,10 @@ class WeightedLinearQualityModel:
         return float(np.sqrt(max(value, 0.0)))
 
     def ucb(self, feature: np.ndarray, beta: float) -> float:
-        return self._clip01(self.predict(feature) + float(beta) * self.uncertainty(feature))
+        z = self._as_feature(feature)
+        if z.shape[0] != self.dimension:
+            raise ValueError(f"feature dimension {z.shape[0]} != model dimension {self.dimension}")
+        return self._clip01(self.prior_mean + float(z @ self.theta) + float(beta) * self.uncertainty(z))
 
     def update(self, feature: np.ndarray, label: float, weight: float = 1.0) -> None:
         z = self._as_feature(feature)

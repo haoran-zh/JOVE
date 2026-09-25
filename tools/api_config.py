@@ -9,9 +9,9 @@ class APIConfig:
     model: str
     executor_cost_unit: float
     safe_latency_prior: float
-    # Paper-style assumption: verification is cheaper than executing the same model.
-    # Catalog prior and (for OpenRouter) discounted verifier USD both use this factor.
-    verifier_cost_factor: float = 0.01
+    # A verifier call is billed at its actual API price. Its prior may be
+    # overridden by observed verifier calls as the online run proceeds.
+    verifier_cost_factor: float = 1.0
     @property
     def verifier_cost_unit(self) -> float:
         return self.executor_cost_unit * self.verifier_cost_factor
@@ -53,23 +53,19 @@ DEFAULT_VERIFIER_MODELS = [
 DEFAULT_VERIFIER_MODEL = DEFAULT_VERIFIER_MODELS[0]
 
 # OpenRouter chat/completions pool (IDs from https://openrouter.ai/models).
-# 3 midsize + 3 large. Llama-3.2-3B and Gemma-3-4B were dropped after JOVE
-# full-stream runs locked on 3B (optimistic verifier labels + cheap cost).
-# Those two IDs remain in DEFAULT_OPENROUTER_CONFIGS for old-run lookup.
-# qwen/qwen3.8-max-0902 is the fixed verifier only (not an executor arm).
-# qwen/qwen3-235b-a22b-2507 remains in the catalog for old-run lookup.
+# Eight executor APIs from Appendix A.4 of the paper.
 DEFAULT_OPENROUTER_MODELS = [
-    # Midsize
+    "meta-llama/llama-3.2-3b-instruct",
+    "google/gemma-3-4b-it",
     "openai/gpt-oss-20b",
     "mistralai/mistral-small-3.2-24b-instruct",
     "qwen/qwen3-32b",
-    # Large
     "meta-llama/llama-3.3-70b-instruct",
     "openai/gpt-oss-120b",
-    "qwen/qwen3-vl-235b-a22b-thinking",
+    "mistralai/mistral-large-2512",
 ]
 DEFAULT_OPENROUTER_PLANNER_MODEL = "google/gemini-2.5-flash-lite"
-DEFAULT_OPENROUTER_VERIFIER_MODEL = "qwen/qwen3.8-max-0902"
+DEFAULT_OPENROUTER_VERIFIER_MODEL = "qwen/qwen3-235b-a22b-2507"
 DEFAULT_OPENROUTER_INFERENCE_MODEL = "qwen/qwen3-32b"
 DEFAULT_OPENROUTER_VERIFIER_MODELS = [
     DEFAULT_OPENROUTER_VERIFIER_MODEL,

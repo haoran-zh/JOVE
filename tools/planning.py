@@ -61,12 +61,13 @@ class TaskNode:
     task_type: str = DEFAULT_TASK_GROUP
     output_format: str = "concise answer"
     input_template: Optional[str] = None
+    candidate_executors: Optional[List[str]] = None
 
     def resolved_template(self) -> str:
         return self.input_template or self.description
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        result = {
             "id": self.id,
             "description": self.description,
             "predecessors": list(self.predecessors),
@@ -74,6 +75,9 @@ class TaskNode:
             "output_format": self.output_format,
             "input_template": self.resolved_template(),
         }
+        if self.candidate_executors is not None:
+            result["candidate_executors"] = list(self.candidate_executors)
+        return result
 
 
 @dataclass
@@ -417,9 +421,9 @@ def build_plan_from_data(
     raw_items = data.get("tasks")
     if not isinstance(raw_items, list) or not raw_items:
         raise ValueError(f"Planner output is missing a non-empty tasks list: {data}")
-    # Prefer the requested count in the prompt/schema, but still execute mismatched
-    # DAGs rather than skipping the prompt (common on hard datasets).
     n_tasks = len(raw_items)
+    if min_tasks is not None and max_tasks is not None and int(min_tasks) == int(max_tasks) and n_tasks != int(max_tasks):
+        raise ValueError(f"Planner returned {n_tasks} tasks; this graph variant requires exactly {max_tasks}.")
     if min_tasks is not None and n_tasks < int(min_tasks):
         print(
             f"[planner_count_mismatch] got={n_tasks} below min_tasks={int(min_tasks)}; proceeding with returned DAG",
@@ -455,6 +459,15 @@ def build_plan_from_data(
             if pred != task_id and pred in known_ids and pred not in unique_predecessors:
                 unique_predecessors.append(pred)
         raw_task_type = " ".join(str(item.get("type", "")).split())
+        raw_candidates = item.get("candidate_executors")
+        if raw_candidates is not None:
+            if not isinstance(raw_candidates, list) or not raw_candidates or any(
+                not isinstance(model, str) or not model.strip() for model in raw_candidates
+            ):
+                raise ValueError(f"Task {task_id} has an invalid candidate_executors list.")
+            candidate_executors = list(dict.fromkeys(model.strip() for model in raw_candidates))
+        else:
+            candidate_executors = None
         raw_task_type_lower = raw_task_type.lower()
         description_lower = description.lower()
         if "verification" in raw_task_type_lower or re.match(
@@ -472,10 +485,13 @@ def build_plan_from_data(
                 task_type=normalize_task_group(raw_task_type),
                 output_format=" ".join(str(item.get("output_format", "concise answer")).split()),
                 input_template=input_template,
+                candidate_executors=candidate_executors,
             )
         )
     plan = Plan(tasks=tasks)
     plan.topological_order()
+    if len(plan.sinks()) != 1:
+        raise ValueError("Planner must return exactly one final-answer sink task.")
     return plan
 
 

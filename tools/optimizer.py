@@ -56,9 +56,12 @@ def _choices_for_task(
     fixed_verifier_model: str,
     allow_self_verification: bool,
 ) -> List[Tuple[str, str]]:
-    del task  # Choice set is task-indexed by callers; verifier model is fixed at run level.
+    eligible = task.candidate_executors or api_candidates
+    unknown = set(eligible) - set(api_candidates)
+    if unknown:
+        raise ValueError(f"Task {task.id} requests executor APIs outside the configured pool: {sorted(unknown)}")
     choices: List[Tuple[str, str]] = []
-    for executor in api_candidates:
+    for executor in eligible:
         choices.append((executor, NO_VERIFIER))
         if allow_self_verification or executor != fixed_verifier_model:
             choices.append((executor, fixed_verifier_model))
@@ -73,14 +76,15 @@ def _objective_coeff(
     q_t: float,
     k_c: float,
     k_v: float,
+    node_count: int,
 ) -> float:
     value = (
-        float(coeffs.exec_quality_ucb[(task_id, executor)])
+        float(coeffs.exec_quality_ucb[(task_id, executor)]) / node_count
         - k_c * q_t * float(coeffs.exec_cost[(task_id, executor)])
     )
     if verifier != NO_VERIFIER:
         value += (
-            k_v * verification_information_gain(coeffs.exec_uncertainty[(task_id, executor)])
+            k_v * verification_information_gain(coeffs.exec_uncertainty[(task_id, executor)]) / node_count
             - k_c * q_t * float(coeffs.verifier_cost[task_id])
         )
     return value
@@ -185,7 +189,7 @@ def _solve_with_pulp(
     F = {task.id: pulp.LpVariable(f"F_{task.id}", lowBound=0, cat="Continuous") for task in plan.tasks}
 
     problem += pulp.lpSum(
-        _objective_coeff(task.id, executor, verifier, coeffs, q_t, k_c, k_v)
+        _objective_coeff(task.id, executor, verifier, coeffs, q_t, k_c, k_v, len(plan.tasks))
         * z[(task.id, executor, verifier)]
         for task in plan.tasks
         for executor, verifier in choices_by_task[task.id]
@@ -262,7 +266,7 @@ def _solve_by_enumeration(
         if not _is_deadline_feasible(plan, finish, mu_t):
             continue
         objective = sum(
-            _objective_coeff(task.id, selected[task.id][0], selected[task.id][1], coeffs, q_t, k_c, k_v)
+            _objective_coeff(task.id, selected[task.id][0], selected[task.id][1], coeffs, q_t, k_c, k_v, len(plan.tasks))
             for task in plan.tasks
         )
         if objective > best_objective:

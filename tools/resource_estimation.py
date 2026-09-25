@@ -13,7 +13,7 @@ from typing import Deque, Dict, Mapping, Optional, Sequence
 
 import numpy as np
 
-from .cost_accounting import DEFAULT_COST_USD_SCALE, extract_usage_usd, usd_to_budget_cost, usage_to_budget_cost
+from .cost_accounting import DEFAULT_COST_USD_SCALE, usage_to_budget_cost
 from .latency import validate_latency_tolerance
 
 ROLE_EXEC = "exec"
@@ -80,7 +80,7 @@ class FeatureWeightedResourceModel:
         self,
         prior_count: float = 1.0,
         max_samples: int = 200,
-        margin_seconds: float = 0.25,
+        margin_seconds: float = 0.0,
     ) -> None:
         if prior_count < 0.0:
             raise ValueError("prior_count must be non-negative")
@@ -204,20 +204,9 @@ def observe_verifier_call(
     fallback_cost: float,
     latency_seconds: float = 0.0,
     scale: float = DEFAULT_COST_USD_SCALE,
-    cost_factor: float = 1.0,
 ) -> None:
-    """Record a verifier observation for JOVE expected ``C_ver``.
-
-    When billed ``usage.cost`` is present, multiply by ``cost_factor`` (default
-    catalog ``verifier_cost_factor``, e.g. 0.01) so the cheap-verifier assumption
-    applies under OpenRouter USD accounting. Catalog ``fallback_cost`` is already
-    ``executor_cost_unit * verifier_cost_factor`` and is left unchanged.
-    """
-    usd = extract_usage_usd(usage)
-    if usd is None:
-        cost = float(fallback_cost)
-    else:
-        cost = usd_to_budget_cost(usd, scale=scale) * float(cost_factor)
+    """Record the billed verifier cost in the same units as executor cost."""
+    cost = usage_to_budget_cost(usage, scale=scale, fallback_budget=fallback_cost)
     model.update_verification(api_id, feature, cost, latency_seconds)
 
 
@@ -260,18 +249,17 @@ def run_self_checks() -> None:
     usd.update_verification("ver", axis_y, 18.0, 0.0)
     assert abs(usd.estimate_realized_mean_cost("ver", 1.0, role=ROLE_VER) - 15.0) < 1e-12
 
-    # Cheap-verifier assumption: billed USD observations are scaled by cost_factor.
-    cheap = FeatureWeightedResourceModel(prior_count=0.0, margin_seconds=0.0)
+    # Verifier observations use the full billed amount.
+    billed = FeatureWeightedResourceModel(prior_count=0.0, margin_seconds=0.0)
     observe_verifier_call(
-        cheap,
+        billed,
         "ver",
         axis_x,
         {"cost": 1.0},
         fallback_cost=2.0,
         scale=100.0,
-        cost_factor=0.01,
     )
-    assert abs(cheap.estimate_cost("ver", axis_x, 2.0, role=ROLE_VER) - 1.0) < 1e-12
+    assert abs(billed.estimate_cost("ver", axis_x, 2.0, role=ROLE_VER) - 100.0) < 1e-12
 
 
 if __name__ == "__main__":
